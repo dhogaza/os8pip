@@ -1,5 +1,8 @@
-*.o
+os8pip
 *.dSYM
+*.o
 *.rk05
 *.tu56
 *.dsk
+*.base
+*.bak
