@@ -4,8 +4,6 @@
 
    Copyright (c) 2022 Don R Baccus
 
-   Inspired by Perl scripts written by Vincent Slyngstad
-
    This program is free software: you can redistribute it and/or modify  
    it under the terms of the GNU General Public License as published by  
    the Free Software Foundation, version 3.
@@ -17,6 +15,7 @@
   
    You should have received a copy of the GNU General Public License 
    along with this program. If not, see <http://www.gnu.org/licenses/>.
+
 */
 
 #include <stddef.h>
@@ -116,7 +115,7 @@ typedef struct {
     pdp8_word_t length;
     pdp8_word_t additional_words[10]; /* should be plenty, usually just one */
     pdp8_word_t additional_count;
-} file_entry_t;
+} entry_t;
 
 const unsigned empty_entry_length = 2; /* flag + length words */
 
@@ -159,7 +158,7 @@ void dump_words(os8_block_t block_buffer)
     putchar('\n');
 }
 
-void dump_file_entry(file_entry_t entry)
+void dump_entry(entry_t entry)
 {
     printf("file block: %d\n", entry.file_block);
     printf("dir_block: %p\n", (void *)entry.dir_block);
@@ -456,7 +455,7 @@ bool overflowed_segment(cursor_t cursor)
 }
 
 /* set cursor to the next valid file entry */
-bool valid_file_entry(cursor_t *cursor)
+bool valid_entry(cursor_t *cursor)
 {
     while (overflowed_segment(*cursor)) {
         int next_segment = cursor->dir_block->d.dir_struct.next_segment;
@@ -478,14 +477,14 @@ unsigned file_entry_length(dir_block_t *dir_block)
            negate(dir_block->d.dir_struct.additional_words);
 }
 
-unsigned entry_length(file_entry_t entry)
+unsigned entry_length(entry_t entry)
 {
     return entry.empty_file ? empty_entry_length :
                               file_entry_length(entry.dir_block);
 }
 
 /* Move cursor to the next file in the a directory segment */
-void advance_cursor(cursor_t *cursor, file_entry_t entry)
+void advance_cursor(cursor_t *cursor, entry_t entry)
 {
     cursor->file_number++;
     cursor->entry += entry_length(entry);
@@ -497,7 +496,7 @@ void advance_cursor(cursor_t *cursor, file_entry_t entry)
    empty file. You have to initalize the cursor first if you
    care about the dir field.
 */
-void restore_cursor(cursor_t *cursor, file_entry_t entry)
+void restore_cursor(cursor_t *cursor, entry_t entry)
 {
     cursor->file_number = entry.file_number;
     cursor->entry = entry.entry;
@@ -506,7 +505,7 @@ void restore_cursor(cursor_t *cursor, file_entry_t entry)
 }    
 
 /* get file entry data but don't advance cursor */
-void peek_file_entry(cursor_t cursor, file_entry_t *entry)
+void peek_entry(cursor_t cursor, entry_t *entry)
 {
     entry->file_block = cursor.next_block;
     entry->dir_block = cursor.dir_block;
@@ -531,14 +530,14 @@ void peek_file_entry(cursor_t cursor, file_entry_t *entry)
 }    
 
 /* get file entry data and advance cursor */
-void get_file_entry(cursor_t *cursor, file_entry_t *entry)
+void get_entry(cursor_t *cursor, entry_t *entry)
 {
-    peek_file_entry(*cursor, entry);
+    peek_entry(*cursor, entry);
     advance_cursor(cursor, *entry);
 }    
 
 /* puts file entry data and marks the current directory block dirty */
-void put_file_entry(file_entry_t entry)
+void put_entry(entry_t entry)
 {
     entry.dir_block->dirty = true;
     if (entry.empty_file) {
@@ -556,7 +555,7 @@ void put_file_entry(file_entry_t entry)
     *entry.entry = negate(entry.length);
 }    
 
-void fix_segment_up(file_entry_t entry, unsigned offset, pdp8_word_t *first_byte)
+void fix_segment_up(entry_t entry, unsigned offset, pdp8_word_t *first_byte)
 {
     shuffle_words_up(first_byte, first_byte + offset, entry.entry);
     pdp8_word_t *flag_word = &(entry.dir_block->d.dir_struct.flag_word);
@@ -566,7 +565,7 @@ void fix_segment_up(file_entry_t entry, unsigned offset, pdp8_word_t *first_byte
     }
 }
 
-void fix_segment_down(file_entry_t entry, unsigned offset)
+void fix_segment_down(entry_t entry, unsigned offset)
 {
     shuffle_words_down(entry.entry + entry_length(entry), entry.entry + offset,
                   &entry.dir_block->d.data[OS8_BLOCK_SIZE - 1]);
@@ -610,13 +609,13 @@ void consolidate(directory_t directory)
 */
 {
     cursor_t cursor;
-    file_entry_t entry;
-    file_entry_t next_entry;
+    entry_t entry;
+    entry_t next_entry;
 
     init_cursor(directory, &cursor);
-    while (valid_file_entry(&cursor)) {
-        get_file_entry(&cursor, &entry);
-        peek_file_entry(cursor, &next_entry);
+    while (valid_entry(&cursor)) {
+        get_entry(&cursor, &entry);
+        peek_entry(cursor, &next_entry);
         if (!overflowed_segment(cursor) &&
             entry.empty_file && next_entry.empty_file) {
 
@@ -624,7 +623,7 @@ void consolidate(directory_t directory)
                segment.
             */
             entry.length += next_entry.length;
-            put_file_entry(entry);
+            put_entry(entry);
             /* renember that number_files is negative */
             entry.dir_block->d.dir_struct.number_files++;
 
@@ -646,7 +645,7 @@ void consolidate(directory_t directory)
 pdp8_word_t *get_unused_ptr(dir_block_t *dir_block, unsigned size)
 {
     cursor_t cursor;
-    file_entry_t entry;
+    entry_t entry;
 
     cursor.dir = NULL;
     cursor.dir_block = dir_block;
@@ -655,7 +654,7 @@ pdp8_word_t *get_unused_ptr(dir_block_t *dir_block, unsigned size)
     cursor.file_number = 1;
 
     while (!overflowed_segment(cursor)) {
-        get_file_entry(&cursor, &entry);
+        get_entry(&cursor, &entry);
     }
 
     /* We're at the end, return a pointer to a new entry if there's room */
@@ -668,16 +667,16 @@ pdp8_word_t *get_unused_ptr(dir_block_t *dir_block, unsigned size)
    file available.  If not it returns the empty file that best fits the requested
    size.  Unlike the USR the request size isn't restricted to 255 bytes. 
 */
-bool get_empty_entry(directory_t directory, file_entry_t *best_entry, unsigned length)
+bool get_empty_entry(directory_t directory, entry_t *best_entry, unsigned length)
 {
-    file_entry_t entry;
+    entry_t entry;
     cursor_t cursor;
 
     best_entry->length = 0;
 
     init_cursor(directory, &cursor);
-    while (valid_file_entry(&cursor)) {
-        get_file_entry(&cursor, &entry);
+    while (valid_entry(&cursor)) {
+        get_entry(&cursor, &entry);
         if (entry.empty_file && entry.length >= length &&
            (best_entry->length == 0 ||
             (length == 0 ? entry.length > best_entry->length :
@@ -693,15 +692,15 @@ bool get_empty_entry(directory_t directory, file_entry_t *best_entry, unsigned l
 */
 
 bool lookup(const_str_t filename, directory_t directory, cursor_t *cursor,
-            file_entry_t *file_entry)
+            entry_t *entry)
 {
     pattern_t pattern;
     build_pattern(strip_device(filename), &pattern);
 
-    while (valid_file_entry(cursor)) {
-        get_file_entry(cursor, file_entry);
-        if (!file_entry->empty_file && file_entry->length != 0) {
-            if (pattern_match_p(file_entry->name, pattern)) {
+    while (valid_entry(cursor)) {
+        get_entry(cursor, entry);
+        if (!entry->empty_file && entry->length != 0) {
+            if (pattern_match_p(entry->name, pattern)) {
                 return true;
             }
         }
@@ -725,7 +724,7 @@ bool lookup(const_str_t filename, directory_t directory, cursor_t *cursor,
    in the empty file.
 */
 
-bool enter(const_str_t filename, const int length, directory_t directory, file_entry_t entry)
+bool enter(const_str_t filename, const int length, directory_t directory, entry_t entry)
 {
     unsigned old_len;
     unsigned len;
@@ -750,11 +749,11 @@ bool enter(const_str_t filename, const int length, directory_t directory, file_e
             entry.additional_words[i] = 0;
         }
         entry.length = length;
-        put_file_entry(entry);
+        put_entry(entry);
 
         restore_cursor(&cursor, entry);
         advance_cursor(&cursor, entry);
-        peek_file_entry(cursor, &entry);
+        peek_entry(cursor, &entry);
 
         /* if we fail these assertionthe caller probably passed us a bogus entry
            rather than the empty file we gave them earlier.
@@ -768,7 +767,7 @@ bool enter(const_str_t filename, const int length, directory_t directory, file_e
             entry.dir_block->d.dir_struct.number_files++;
         } else {
             /* write over old empty file to save its diminished length */
-            put_file_entry(entry);
+            put_entry(entry);
         }
         return true;
     }
@@ -1115,7 +1114,7 @@ void print_directory(directory_t directory, long columns, const_str_t match_file
                      bool print_empties_p)
 {
     cursor_t cursor;
-    file_entry_t file_entry;
+    entry_t entry;
     long column = 0;
     pdp8_word_t files = 0;
     pdp8_word_t used = 0;
@@ -1125,25 +1124,25 @@ void print_directory(directory_t directory, long columns, const_str_t match_file
     build_pattern(match_filename, &pattern);
 
     init_cursor(directory, &cursor);
-    while (valid_file_entry(&cursor)) {
-        get_file_entry(&cursor, &file_entry);
-        if (file_entry.empty_file) {
-            empty += file_entry.length;
+    while (valid_entry(&cursor)) {
+        get_entry(&cursor, &entry);
+        if (entry.empty_file) {
+            empty += entry.length;
         }
-        if (file_entry.empty_file && print_empties_p) {
+        if (entry.empty_file && print_empties_p) {
             printf("%-11s", "<empty>");
-        } else if (!file_entry.empty_file && file_entry.length != 0 && 
-                   pattern_match_p(file_entry.name, pattern)) {
+        } else if (!entry.empty_file && entry.length != 0 && 
+                   pattern_match_p(entry.name, pattern)) {
             os8_filename_t filename;
-            get_filename(file_entry.name, filename);
+            get_filename(entry.name, filename);
             printf("%-11s", filename);
-            used += file_entry.length;
+            used += entry.length;
             files++;
         } else {
             continue;
         }
         column++;
-        printf("%5d", file_entry.length);
+        printf("%5d", entry.length);
         if (column % columns != 0) {
             printf("%10s", " ");
         } else {
@@ -1156,20 +1155,20 @@ void print_directory(directory_t directory, long columns, const_str_t match_file
     printf("\n  %d Files In %d Blocks - %d Free Blocks\n", files, used, empty);
 }
 bool stream_host_image_file(FILE *input, int os8_file,
-                            block_io_t write_block, file_entry_t entry)
+                            block_io_t write_block, entry_t entry)
 {
 return true;
 }
 
-bool stream_os8_image_file(file_entry_t file_entry, int os8_file,
+bool stream_os8_image_file(entry_t entry, int os8_file,
                           block_io_t read_block, FILE *output)
 {
     os8_block_t block;
     bool eof_p = false;
     unsigned cnt = 0;
 
-    for (pdp8_word_t block_no = file_entry.file_block;
-        block_no < file_entry.file_block + file_entry.length;
+    for (pdp8_word_t block_no = entry.file_block;
+        block_no < entry.file_block + entry.length;
         block_no++) {
         if (!read_block(os8_file, block_no, block)) {
             return false;
@@ -1182,12 +1181,12 @@ bool stream_os8_image_file(file_entry_t file_entry, int os8_file,
     return true;
 }
 
-bool stream_os8_text_file(file_entry_t file_entry, int os8_file,
+bool stream_os8_text_file(entry_t entry, int os8_file,
                           block_io_t read_block, FILE *output)
 {
     os8_block_t block;
     bool eof_p = false;
-    pdp8_word_t block_no = file_entry.file_block;
+    pdp8_word_t block_no = entry.file_block;
     unsigned cnt = 0;
 
     while (!eof_p) {
@@ -1221,7 +1220,7 @@ bool stream_os8_text_file(file_entry_t file_entry, int os8_file,
             cnt++;
         }
         block_no++;
-        eof_p |= block_no == file_entry.file_block + file_entry.length;
+        eof_p |= block_no == entry.file_block + entry.length;
     }
     return true;
 }
@@ -1231,16 +1230,16 @@ bool print_os8_text_file(const_str_t filename, int os8_file,
                     block_io_t read_block, directory_t directory)
 {
     cursor_t cursor;
-    file_entry_t file_entry;
+    entry_t entry;
     init_cursor(directory, &cursor);
-    if (lookup(filename, directory, &cursor, &file_entry)) {
-        return stream_os8_text_file(file_entry, os8_file, read_block, stdout);
+    if (lookup(filename, directory, &cursor, &entry)) {
+        return stream_os8_text_file(entry, os8_file, read_block, stdout);
     }
     printf("OS/8 file not found\n");
     return false;
 }
 
-void delete_entry(file_entry_t *entry)
+void delete_entry(entry_t *entry)
 {
     /* scrunch the directory segment down to the end of the new
        entry, accounting for the fact that we didn't remove the
@@ -1249,7 +1248,7 @@ void delete_entry(file_entry_t *entry)
     */
     fix_segment_down(*entry, empty_entry_length);
     entry->empty_file = true; 
-    put_file_entry(*entry);        
+    put_entry(*entry);        
 }
 
 bool delete_os8_files(char **argv, int first, int last, bool quiet_p, directory_t directory)
@@ -1265,14 +1264,14 @@ bool delete_os8_files(char **argv, int first, int last, bool quiet_p, directory_
     int deleted_files = 0;
     for (int i = first; i <= last; i++) {
         cursor_t cursor;
-        file_entry_t entry;
+        entry_t entry;
         init_cursor(directory, &cursor);
         pattern_t pattern;
 
         build_pattern(strip_device(argv[i]), &pattern);
 
-        while (valid_file_entry(&cursor)) {
-            peek_file_entry(cursor, &entry);
+        while (valid_entry(&cursor)) {
+            peek_entry(cursor, &entry);
             if (!entry.empty_file && entry.length != 0 &&
                 pattern_match_p(entry.name, pattern)) {
                 bool delete_file_p = true;
@@ -1333,14 +1332,14 @@ bool copy_os8_files(char **argv, int first, int last, int os8_file,
 
     for (int i = first; i < last; i++) {
         cursor_t cursor;
-        file_entry_t file_entry;
+        entry_t entry;
 
         init_cursor(directory, &cursor);
-        while (lookup(argv[i], directory, &cursor, &file_entry)) {
+        while (lookup(argv[i], directory, &cursor, &entry)) {
             char output_path[PATH_MAX + 10] = {'\0'};
             os8_filename_t filename;
             strncat(output_path, argv[last], PATH_MAX);
-            get_filename(file_entry.name, filename);
+            get_filename(entry.name, filename);
 
             if (is_dir_p) {
                 strcat(output_path, "/");
@@ -1356,9 +1355,9 @@ bool copy_os8_files(char **argv, int first, int last, int os8_file,
 
             bool error_p;
             if (text_p) {
-                error_p = !stream_os8_text_file(file_entry, os8_file, read_block, output);
+                error_p = !stream_os8_text_file(entry, os8_file, read_block, output);
             } else {
-                error_p = !stream_os8_image_file(file_entry, os8_file, read_block, output);
+                error_p = !stream_os8_image_file(entry, os8_file, read_block, output);
             }
 
             fclose(output);
@@ -1403,7 +1402,7 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
             return false;
         }
 
-file_entry_t entry;
+entry_t entry;
 cursor_t cursor;
 init_cursor(directory, &cursor);
 /* remember nothing permanent happens until write_directory is called, which
@@ -1424,9 +1423,9 @@ error_p = !stream_host_image_file(input, os8_file, write_block, entry);
 /*
 bool error_p;
 if (text_p) {
-error_p = !stream_os8_text_file(file_entry, os8_file, read_block, output);
+error_p = !stream_os8_text_file(entry, os8_file, read_block, output);
 } else {
-error_p = !stream_os8_image_file(file_entry, os8_file, read_block, output);
+error_p = !stream_os8_image_file(entry, os8_file, read_block, output);
 }
 */
 
