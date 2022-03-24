@@ -37,13 +37,13 @@ who got the first version going (PS/8 TECO) and sent it to DEC...
 Device files with the default extensions (.rk05, .dsk, .tu56, .dt8)
 are automatically recognized but can be overridden with the switches
 --rk05, --dsk, --tu56, --dt8.
-  
+ 
 Get a directory listing of an OS/8 device file:
 
 os8pip --os8 mytape.tu56 --dir [--empties] [--columns n]
 
 Output an OS/8 file to stdout:
-  
+ 
 os8pip --os8 mydisk.rk05 os8:help.he
 
 Copy files from an OS/8 device file to the host:
@@ -57,7 +57,7 @@ os8pip --os8 mydisk.rk05
 Delete files from the OS/8 device file:
 
 os8pip --os8 mytape.tu56 os8:b*.* os8:pal8.pa [--quiet]
-  
+ 
 Create a new os8 user device file (no system area), giving an
 error if the file already exists:
 
@@ -65,13 +65,13 @@ os8pip --os8 newdisk.rk05 --create
 
 The newly-created rk05 device file has a single file system,
 rka.  To add an rkb file system:
-  
+ 
 os8pip --os8 newdisk.rk05 --create --rkb --exists
 
 To get a directory of the newly created rkb file system:
-  
+ 
 os8pip --os8 newdisk.rk05 --dir --rkb
-  
+ 
 To zero an existing OS/8 device file's file system, preserving
 the structure (user or system):
 
@@ -84,4 +84,21 @@ Supported file formats at the moment:
  - DECTape (two bytes per 12 bit word, 129 word blocks).
  - RK05 OS/X PDP-8/e format (3:2 packing, 384 byte blocks),
    both platters (RKAn: and RKBn: on OS/8).
+
+ ".ba" - BASIC Source
+ ".bi" - BATCH Input
+ ".fc" - FOCAL Source
+ ".ft" - FORTRAN Source
+ ".he" - HELP
+ ".hl" - HELP
+ ".ls" - Listing
+ ".ma" - MACRO Source
+ ".pa" - PAL Source
+ ".ps" - Pascal Source
+ ".ra" - RALF Source
+ ".ro" - Runoff Source
+ ".sb" - SABR Source
+ ".sl" - SABR Source
+ ".te" - TECO File
+ ".tx" - Text File
 
