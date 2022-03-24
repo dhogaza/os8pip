@@ -4,6 +4,8 @@
 
    Copyright (c) 2022 Don R Baccus
 
+   Inspired by Perl scripts written by Vincent Slyngstad
+
    This program is free software: you can redistribute it and/or modify  
    it under the terms of the GNU General Public License as published by  
    the Free Software Foundation, version 3.

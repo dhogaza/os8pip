@@ -1,6 +1,9 @@
 # os8pip utility
 Provides OS/8 PIP-like functionality on Mac OS/X.
 
+Inspired in part by Vincent Slyngstad's Perl scripts that work
+on OS/8 device files.
+
 Written in the ISO 2011 standard version of C, verified by CLANG's
 -std=c11 switch.
 
