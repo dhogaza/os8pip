@@ -436,6 +436,16 @@ void get_filename(name_t name, char *filename)
 
 /* OS/8 Directory handling code */
 
+unsigned index_from_dir_block(directory_t directory, dir_block_t *dir_block)
+{
+    unsigned segment = 0;
+    while (&directory[segment] != dir_block) {
+        segment += 1;
+        assert(segment != MAX_DIR_LENGTH);
+    } 
+    return segment;
+}
+
 void init_cursor(directory_t directory, cursor_t *cursor)
 {
     cursor->dir = directory;
@@ -635,17 +645,13 @@ void consolidate(directory_t directory)
     }
 }
 
-/* If there's enough space in the segment for a new entry of the given size,
-   return a pointer to the word within the segment, NULL otherwise.
+void get_last_entry(dir_block_t *dir_block, entry_t *entry)
 
-   Just like the OS/8's USR MENTER routine, we do this by walking the entries
-   until we find the last then check to see that there's room in the data
-   buffer..
+/*
+   Just like the OS/8's USR , we do this by walking the entries until we find the last.
 */
-pdp8_word_t *get_unused_ptr(dir_block_t *dir_block, unsigned size)
 {
     cursor_t cursor;
-    entry_t entry;
 
     cursor.dir = NULL;
     cursor.dir_block = dir_block;
@@ -654,12 +660,22 @@ pdp8_word_t *get_unused_ptr(dir_block_t *dir_block, unsigned size)
     cursor.file_number = 1;
 
     while (!overflowed_segment(cursor)) {
-        get_entry(&cursor, &entry);
+        get_entry(&cursor, entry);
     }
+}
+
+/* If there's enough space in the segment for a new entry of the given size,
+   return a pointer to the word within the segment, NULL otherwise.
+*/
+pdp8_word_t *get_unused_ptr(dir_block_t *dir_block, unsigned size)
+{
+    entry_t entry;
+
+    get_last_entry(dir_block, &entry);
 
     /* We're at the end, return a pointer to a new entry if there's room */
     pdp8_word_t *empty_ptr = entry.entry + entry_length(entry);
-    return empty_ptr + size < &(cursor.dir_block->d.data[OS8_BLOCK_SIZE]) ?
+    return empty_ptr + size < &(entry.dir_block->d.data[OS8_BLOCK_SIZE]) ?
            empty_ptr : NULL;
 }
 
@@ -667,6 +683,7 @@ pdp8_word_t *get_unused_ptr(dir_block_t *dir_block, unsigned size)
    file available.  If not it returns the empty file that best fits the requested
    size.  Unlike the USR the request size isn't restricted to 255 bytes. 
 */
+
 bool get_empty_entry(directory_t directory, entry_t *best_entry, unsigned length)
 {
     entry_t entry;
@@ -731,46 +748,63 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
     cursor_t cursor;
     pdp8_word_t *unused_ptr;
 
-    unsigned new_entry_length = file_entry_length(entry.dir_block);
+    /* we push up the empty file plus a hole big enough for the file entry, if
+       the empty file is exactly the right size we remove it later.  Either way
+       we want our new file entry and the empty entry adjacent in the same
+       dir block.
+    */
+    unsigned new_entry_length = empty_entry_length + file_entry_length(entry.dir_block);
 
-    if ((unused_ptr = get_unused_ptr(entry.dir_block, new_entry_length)) == NULL) {
-        return false;
-    } else {
-        /* must be first */
-        fix_segment_up(entry, new_entry_length, unused_ptr);
-
-        /* negative twos complement number */
-        entry.dir_block->d.dir_struct.number_files--;
-
-        entry.empty_file = false;
-        build_sixbit(filename, entry.name); 
-        entry.additional_count = negate(entry.dir_block->d.dir_struct.additional_words);
-        for (int i = 0; i < MIN(10, entry.additional_count); i++) {
-            entry.additional_words[i] = 0;
-        }
-        entry.length = length;
-        put_entry(entry);
-
-        restore_cursor(&cursor, entry);
-        advance_cursor(&cursor, entry);
-        peek_entry(cursor, &entry);
-
-        /* if we fail these assertionthe caller probably passed us a bogus entry
-           rather than the empty file we gave them earlier.
-        */
-        assert(entry.empty_file);
-        assert(entry.length >= length);
-
-        if ((entry.length -= length) == 0) {
-            /* wipe out our empty file of length zero */
-            fix_segment_down(entry, 0);
-            entry.dir_block->d.dir_struct.number_files++;
-        } else {
-            /* write over old empty file to save its diminished length */
-            put_entry(entry);
-        }
-        return true;
+    /* find space for our new entry */
+    dir_block_t *dir_block = entry.dir_block;
+    while ((unused_ptr = get_unused_ptr(dir_block, new_entry_length)) == NULL &&
+            dir_block->d.dir_struct.next_segment != 0) {
+          dir_block = &directory[dir_block->d.dir_struct.next_segment];
     }
+
+    /* ran out of segments gotta add a new one */
+    if (unused_ptr == NULL) {
+        if (index_from_dir_block(directory, dir_block) == MAX_DIR_LENGTH - 1) {
+            return false;
+        }
+        /* No room in existing segments but we have room to add one */    
+        /* after doing so make sure falling in works */
+    }
+
+    /* must be done first thing */
+    fix_segment_up(entry, new_entry_length, unused_ptr);
+
+    /* negative twos complement number */
+    entry.dir_block->d.dir_struct.number_files--;
+
+    entry.empty_file = false;
+    build_sixbit(filename, entry.name); 
+    entry.additional_count = negate(entry.dir_block->d.dir_struct.additional_words);
+    for (int i = 0; i < MIN(10, entry.additional_count); i++) {
+        entry.additional_words[i] = 0;
+    }
+    entry.length = length;
+    put_entry(entry);
+
+    restore_cursor(&cursor, entry);
+    advance_cursor(&cursor, entry);
+    peek_entry(cursor, &entry);
+
+    /* if we fail these assertionthe caller probably passed us a bogus entry
+       rather than the empty file we gave them earlier.
+    */
+    assert(entry.empty_file);
+    assert(entry.length >= length);
+
+    if ((entry.length -= length) == 0) {
+        /* wipe out our empty file of length zero */
+        fix_segment_down(entry, 0);
+        entry.dir_block->d.dir_struct.number_files++;
+    } else {
+        /* write over old empty file to save its diminished length */
+        put_entry(entry);
+    }
+    return true;
 }
 
 /* End of directory manipulation */
