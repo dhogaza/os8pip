@@ -762,7 +762,7 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
         assert(entry.length >= length);
 
         if ((entry.length -= length) == 0) {
-            // wipe out our empty file of length zero
+            /* wipe out our empty file of length zero */
             fix_segment_down(entry, 0);
             entry.dir_block->d.dir_struct.number_files++;
         } else {
