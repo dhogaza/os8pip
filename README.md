@@ -1,4 +1,4 @@
-# os8pip
+# os8pip utility
 Provides OS/8 PIP-like functionality on Mac OS/X.
 
 Written in the ISO 2011 standard version of C, verified by CLANG's
