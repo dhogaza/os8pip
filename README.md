@@ -37,7 +37,7 @@ project.
 Not that there's anything wrong with OS/8 TECO, I was one of those
 who got the first version going (PS/8 TECO) and sent it to DEC...
 
-Device files with the default extensions (.rk05, .dsk, .tu56, .dt8)
+Device files with the default extensions .rk05, .dsk, .tu56, or .dt8
 are automatically recognized but can be overridden with the switches
 --rk05, --dsk, --tu56, --dt8.
  
