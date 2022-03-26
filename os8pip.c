@@ -51,7 +51,7 @@ const unsigned DECTAPE_BLOCKS = OS8_DECTAPE_LENGTH / (OS8_BLOCK_SIZE * 2);
 const unsigned RK05_BLOCK_SIZE = 384; /* 256 words */
 const unsigned RK05_RKB_OFFSET = 3248; /* blocks */
 
-#define MAX_DIR_LENGTH 6
+#define DIR_LENGTH 6
 const unsigned FIRST_DIR_BLOCK=1;
 
 typedef struct {
@@ -88,7 +88,7 @@ typedef struct {
    whole thing in memory.
 */
 
-typedef dir_block_t directory_t[MAX_DIR_LENGTH];
+typedef dir_block_t directory_t[DIR_LENGTH];
 
 typedef struct {
     pdp8_word_t file_number;
@@ -160,16 +160,16 @@ void dump_words(os8_block_t block_buffer)
 
 void dump_entry(entry_t entry)
 {
-    printf("file block: %d\n", entry.file_block);
-    printf("dir_block: %p\n", (void *)entry.dir_block);
-    printf("entry: %p\n", (void *)entry.entry);
+    printf("file block: %2d ", entry.file_block);
+    printf("dir_block: %p ", (void *)entry.dir_block);
+    printf("entry: %p ", (void *)entry.entry);
     printf("empty_file: %d\n", entry.empty_file);
     if (!entry.empty_file) {
         int i;
         for (i = 0; i < 4; i++) {
-            printf("name[%d]: %6o\n", i, entry.name[i]);
+            printf("name[%d]: %6o ", i, entry.name[i]);
         }
-        printf("additional count: %d\n", entry.additional_count);
+        printf("additional count: %d ", entry.additional_count);
         for (i = 0; i < MIN(10, entry.additional_count); i++) {
             printf("additiona_words[%d]: %6o\n", i, entry.additional_words[i]);
         }
@@ -441,9 +441,31 @@ unsigned index_from_dir_block(directory_t directory, dir_block_t *dir_block)
     unsigned segment = 0;
     while (&directory[segment] != dir_block) {
         segment += 1;
-        assert(segment != MAX_DIR_LENGTH);
+        assert(segment != DIR_LENGTH);
     } 
     return segment;
+}
+
+/*
+  I learned the hard way it is easy to forget to set dirty true.
+*/
+
+void bump_number_files(dir_block_t *dir_block, int amount)
+{
+    dir_block->dirty = true;
+    dir_block->d.dir_struct.number_files -= amount;
+}
+
+void bump_first_file_block(dir_block_t *dir_block, int amount)
+{
+    dir_block->dirty = true;
+    dir_block->d.dir_struct.first_file_block += amount;
+}
+
+void set_next_segment(dir_block_t *dir_block, int next_segment)
+{
+    dir_block->dirty = true;
+    dir_block->d.dir_struct.next_segment = next_segment;
 }
 
 void init_cursor(directory_t directory, cursor_t *cursor)
@@ -472,7 +494,7 @@ bool valid_entry(cursor_t *cursor)
         if (next_segment == 0) {
             return false; /* we've read the entire directory */
         }
-        assert(next_segment <= MAX_DIR_LENGTH);
+        assert(next_segment <= DIR_LENGTH);
         cursor->file_number = 1;
         cursor->dir_block = &(cursor->dir[next_segment - 1]);
         cursor->next_block = cursor->dir_block->d.dir_struct.first_file_block;
@@ -565,13 +587,20 @@ void put_entry(entry_t entry)
     *entry.entry = negate(entry.length);
 }    
 
+/* We try to maintain the flag word if possible.  Someone might have ENTERed
+   a file without CLOSEing it, unmounted it, is writing a file here, and
+   expects to be able to CLOSE it if they remount it on the same device.  I
+   don't know why anyone would expect that to work.  But it might. Except
+   when you write a file using this program and it bumps your tenative entry
+   to the next page.  Then we give up.
+*/
 void fix_segment_up(entry_t entry, unsigned offset, pdp8_word_t *first_byte)
 {
     shuffle_words_up(first_byte, first_byte + offset, entry.entry);
     pdp8_word_t *flag_word = &(entry.dir_block->d.dir_struct.flag_word);
     if (*flag_word != 0 &&
         (entry.dir_block->d.data + (*flag_word - 01400)) > entry.entry) {
-        *flag_word += offset;
+        *flag_word = *flag_word + offset > 01777 ? 0 : *flag_word + offset;;
     }
 }
 
@@ -619,6 +648,10 @@ void consolidate(directory_t directory)
     can leave and empty entry at the end of one segment abutting an empty
     entry at the beginning of the next block.
 
+    We consolidate two empty files that are adjacent and also zero-length
+    empty files that aren't the only file in their segment (segments with
+    zero files break things, here and in OS/8).
+
     Deleting abutting empty files on adjacent segments would be easy if
     the following empty file isn't the only file in the segment.  After
     combining them, the file count  stored in the following segment would
@@ -647,21 +680,23 @@ void consolidate(directory_t directory)
     while (valid_entry(&cursor)) {
         get_entry(&cursor, &entry);
         peek_entry(cursor, &next_entry);
-        if (!overflowed_segment(cursor) &&
-            entry.empty_file && next_entry.empty_file) {
+        if (entry.empty_file) {
+            if (entry.length == 0) {
+                /* remove zero length empty file */
+                fix_segment_down(entry, 0);
+                bump_number_files(entry.dir_block, -1);
+            } else if (!overflowed_segment(cursor) && next_entry.empty_file) {
+                /* we have found two adjacent empty entries in the same
+                   segment.
+                */
+                entry.length += next_entry.length;
+                put_entry(entry);
 
-            /* we have found two adjacent empty entries in the same
-               segment.
-            */
-            entry.length += next_entry.length;
-            put_entry(entry);
-            /* renember that number_files is negative */
-            entry.dir_block->d.dir_struct.number_files++;
-
-            /* now scrunch the segment on top of the second empty file */
-            fix_segment_down(next_entry, 0);
-
-            restore_cursor(&cursor, entry); /* let's look at our empty file again */
+                /* now scrunch the segment on top of the second empty file */
+                fix_segment_down(next_entry, 0);
+                bump_number_files(entry.dir_block, -1);
+                restore_cursor(&cursor, entry); /* let's look at our empty file again */
+            }
         }
     }
 }
@@ -701,10 +736,13 @@ pdp8_word_t *get_unused_ptr(dir_block_t *dir_block, unsigned size)
 
 /* Like OS/8's USR MENTER routine, if size is zero it returns the biggest empty
    file available.  If not it returns the empty file that best fits the requested
-   size.  Unlike the USR the request size isn't restricted to 255 bytes. 
+   size.  Unlike the USR the request size isn't restricted to 255 bytes. The
+   exclude entry is provided to avoid grabbing a file we've just deleted, and
+   thereby overwriting its data blocks.
 */
 
-bool get_empty_entry(directory_t directory, entry_t *best_entry, unsigned length)
+bool get_empty_entry(directory_t directory, entry_t exclude_entry,
+                     entry_t *best_entry, unsigned length)
 {
     entry_t entry;
     cursor_t cursor;
@@ -714,7 +752,9 @@ bool get_empty_entry(directory_t directory, entry_t *best_entry, unsigned length
     init_cursor(directory, &cursor);
     while (valid_entry(&cursor)) {
         get_entry(&cursor, &entry);
-        if (entry.empty_file && entry.length >= length &&
+        if (entry.dir_block != exclude_entry.dir_block &&
+            entry.file_number != exclude_entry.file_number &&
+            entry.empty_file && entry.length >= length &&
            (best_entry->length == 0 ||
             (length == 0 ? entry.length > best_entry->length :
                            entry.length < best_entry->length))) {
@@ -767,9 +807,16 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
     unsigned len;
     cursor_t cursor;
     pdp8_word_t *unused_ptr;
+
     unsigned new_entry_length = file_entry_length(entry.dir_block);
 
-    while ((unused_ptr = get_unused_ptr(entry.dir_block, new_entry_length)) == NULL) {
+    /*
+       Testing shows that OS/8's USR MENTER routine doesn't entirely fill up a
+       segment so we won't either, as doing so might break the real thing.
+    */
+    unsigned min_free_length = new_entry_length + empty_entry_length;
+
+    while ((unused_ptr = get_unused_ptr(entry.dir_block, min_free_length)) == NULL) {
         /*
            No room in the segment that the entry lives in.  So we need to start
            shuffling entries from the end of one segment to the beginning of the
@@ -785,28 +832,22 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
            previous segment, starting with the segment the entry is on.
         */
         unsigned next_segment;
-        while ((next_segment = dir_block->d.dir_struct.next_segment != 0)) {
-            entry_t last_entry;
+        while ((next_segment = dir_block->d.dir_struct.next_segment) != 0) {
             pdp8_word_t *next_unused_ptr;
             dir_block_t *next_dir_block = &directory[next_segment - 1];
 
-            get_last_entry(dir_block, &last_entry);
-            unsigned last_entry_length = entry_length(last_entry);
-
-            if ((next_unused_ptr = get_unused_ptr(next_dir_block, last_entry_length)) == NULL) {
+            if ((next_unused_ptr = get_unused_ptr(next_dir_block, min_free_length)) != NULL) {
+                entry_t last_entry;
+                get_last_entry(dir_block, &last_entry);
 
                 /* our best sized entry might be the last entry in the segment, oh my! */
-                bool move_entry = last_entry.file_number == entry.file_number;
+                bool move_entry = last_entry.file_number == entry.file_number &&
+                                  last_entry.dir_block == entry.dir_block;
 
                 /* dir_block's loss is next_dir_block's gain */
-                dir_block->d.dir_struct.number_files++;
-                next_dir_block->d.dir_struct.number_files--;
-
-                for (dir_block_t *d = next_dir_block;
-                     d->d.dir_struct.next_segment != 0;
-                     d = &directory[d->d.dir_struct.next_segment - 1]) {
-                    d->d.dir_struct.first_file_block += last_entry.length;
-                }
+                bump_number_files(dir_block, -1);
+                bump_number_files(next_dir_block, 1);
+                bump_first_file_block(next_dir_block, -last_entry.length);
 
                 /* make the last entry on this dir_block become the first on the next */
                 last_entry.dir_block = next_dir_block;
@@ -814,28 +855,46 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
                 last_entry.file_number = 1;
                 last_entry.file_block = next_dir_block->d.dir_struct.first_file_block;
 
-                fix_segment_up(last_entry, last_entry_length, next_unused_ptr);
+                fix_segment_up(last_entry, entry_length(last_entry), next_unused_ptr);
 
                 /* store the entry in the new segment */
                 put_entry(last_entry);
 
                 if (move_entry) {
                     entry = last_entry;
-                    /* maybe this new page has enough room to make our file! */
-                    break;
                 }
-                dir_block = next_dir_block;
+                break;
+            }
+            dir_block = next_dir_block;
+        }
+
+        /* If next_segment is zero, there is absolutely no room in the existing segments
+           so we need to add one if possible.  When allocating, OS/8 assumes there are no
+           holes in the list of segments even though it is kept in linked-list form, so
+           we'll do the same.
+        */
+        if (dir_block->d.dir_struct.next_segment == 0) {
+            pdp8_word_t index;
+            /* we could probably add bookkeeping above to avoid computing first file block */
+            entry_t temp_entry;
+            if ((index = index_from_dir_block(directory, dir_block) + 1) < DIR_LENGTH) {
+                set_next_segment(dir_block, index + 1);
+                directory[index].d.dir_struct.number_files = negate(1);
+                get_last_entry(dir_block, &temp_entry);
+                directory[index].d.dir_struct.first_file_block = temp_entry.file_block +
+                                                    entry_length(temp_entry);
+                directory[index].d.dir_struct.next_segment = 0;
+                directory[index].d.dir_struct.flag_word = 0;
+                directory[index].d.dir_struct.additional_words = dir_block->d.dir_struct.additional_words;
+
+                /* this zero-length entry file will be removed by consolidate */
+                directory[index].d.dir_struct.file_entries[0] = 0;
+                directory[index].d.dir_struct.file_entries[1] = 0;
+
+            } else {
+                return false;
             }
         }
-        /* absolutely no room in the existing segments so we need to add one if
-           possible.  When allocating, OS/8 assumes there are no holes in the list
-           of segments even though it is kept in linked-list form, so we'll do the
-           same.
-
-        if (index_from_dir_block(directory, dir_block) == MAX_DIR_LENGTH - 1) {
-            return false;
-        }
-        */
     }
 
     assert(validate_directory(directory)); /* after all that, wouldn't you? */
@@ -843,8 +902,7 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
     /* must be done first thing */
     fix_segment_up(entry, new_entry_length, unused_ptr);
 
-    /* negative twos complement number */
-    entry.dir_block->d.dir_struct.number_files--;
+    bump_number_files(entry.dir_block, 1);
 
     entry.empty_file = false;
     build_sixbit(filename, entry.name); 
@@ -865,14 +923,19 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
     assert(entry.empty_file);
     assert(entry.length >= length);
 
-    if ((entry.length -= length) == 0) {
-        /* wipe out our empty file of length zero */
-        fix_segment_down(entry, 0);
-        entry.dir_block->d.dir_struct.number_files++;
-    } else {
-        /* write over old empty file to save its diminished length */
-        put_entry(entry);
-    }
+    entry.length -= length;
+    /* write over old empty file to save its diminished length */
+    put_entry(entry);
+
+//    if ((entry.length -= length) == 0) {
+//        /* wipe out our empty file of length zero */
+//        fix_segment_down(entry, 0);
+//        bump_number_files(entry.dir_block, -1);
+//    } else {
+//        /* write over old empty file to save its diminished length */
+//        put_entry(entry);
+//    }
+    consolidate(directory);
     return true;
 }
 
@@ -1054,7 +1117,7 @@ bool read_directory(block_io_t read_block, int os8_file, directory_t directory)
         int i = block_no - FIRST_DIR_BLOCK;
         directory[i].dirty = false;
         block_no = directory[i].d.dir_struct.next_segment;
-        if (block_no > MAX_DIR_LENGTH) {
+        if (block_no > DIR_LENGTH) {
             return false;
         }
     } while (block_no != 0);
@@ -1079,7 +1142,7 @@ bool write_directory(block_io_t write_block, int os8_file, directory_t directory
     do {
         int i = block_no - FIRST_DIR_BLOCK;
         if (directory[i].dirty) {
-            if ((directory[i].d.dir_struct.next_segment > MAX_DIR_LENGTH) ||
+            if ((directory[i].d.dir_struct.next_segment > DIR_LENGTH) ||
                 !write_block(os8_file, block_no, directory[block_no - FIRST_DIR_BLOCK].d.data)) {
                 printf("Error writing directory, directory may be corrupted\n");
                 return false;
@@ -1098,14 +1161,14 @@ bool get_device(device_t *device, format_t format)
         case dectape:
         case tu56:
             device->last_block_no = DECTAPE_BLOCKS - 1;
-            device->filesystem_size = DECTAPE_BLOCKS - FIRST_DIR_BLOCK - MAX_DIR_LENGTH;
+            device->filesystem_size = DECTAPE_BLOCKS - FIRST_DIR_BLOCK - DIR_LENGTH;
             break;
         case rk05:
             device->last_block_no = RK05_RKB_OFFSET - 1;
-            device->filesystem_size = RK05_RKB_OFFSET - FIRST_DIR_BLOCK - MAX_DIR_LENGTH;
+            device->filesystem_size = RK05_RKB_OFFSET - FIRST_DIR_BLOCK - DIR_LENGTH;
             break;
         default:
-            printf("Unsupported device format in create diretory\n");
+            printf("Internal error: unsupported device format\n");
             return false;
     }   
     device->size = device->last_block_no + 1;
@@ -1143,7 +1206,7 @@ bool create_filesystem(block_io_t write_block, int os8_file,
     device_t device;
     get_device(&device, format);
 
-    for (dir_block_t *block_ptr = &directory[0]; block_ptr < directory + MAX_DIR_LENGTH;
+    for (dir_block_t *block_ptr = &directory[0]; block_ptr < directory + DIR_LENGTH;
          block_ptr++) {
         block_ptr->dirty = false;
         for (pdp8_word_t *data_ptr = &(block_ptr->d.data[0]); data_ptr < block_ptr->d.data + OS8_BLOCK_SIZE;
@@ -1153,7 +1216,7 @@ bool create_filesystem(block_io_t write_block, int os8_file,
     }
 
     directory[0].d.dir_struct.number_files = negate(1);
-    directory[0].d.dir_struct.first_file_block = MAX_DIR_LENGTH + 1;
+    directory[0].d.dir_struct.first_file_block = DIR_LENGTH + 1;
     directory[0].d.dir_struct.next_segment = 0;
     directory[0].d.dir_struct.flag_word = 0;
     directory[0].d.dir_struct.additional_words = negate(1);
@@ -1176,7 +1239,7 @@ bool create_filesystem(block_io_t write_block, int os8_file,
     }
 
     /* write all of the directory blocks whether active or not when initializing */
-    for (unsigned block_no = 0; block_no < MAX_DIR_LENGTH; block_no++) {
+    for (unsigned block_no = 0; block_no < DIR_LENGTH; block_no++) {
         if (!write_block(os8_file, block_no + FIRST_DIR_BLOCK,
                          directory[block_no].d.data)) {
             printf("Error writing initial directory in create filesystem\n");
@@ -1486,22 +1549,25 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
         }
 
 entry_t entry;
+entry_t exclude_entry = {0};
 cursor_t cursor;
+
 init_cursor(directory, &cursor);
 /* remember nothing permanent happens until write_directory is called, which
    won't happen if we have errors.
 */
-if (lookup("", directory, &cursor, &entry)) {
-    delete_entry(&entry);
+if (lookup("foobar", directory, &cursor, &exclude_entry)) {
+    delete_entry(&exclude_entry);
 }
-consolidate(directory);
-/* there's no space available and some files have been copies we can
+
+/* if there's no space available and some files have been copies we can
    offer the user the option of saving what was saved and exiting
    normally, or rolling back the change (by not writing the directory
 */
-if (get_empty_entry(directory, &entry, 0)) {
-enter("foobar", 21, directory, entry);
+if (get_empty_entry(directory, exclude_entry, &entry, 6)) {
+enter("foobar", 6, directory, entry);
 }
+consolidate(directory);
 error_p = !stream_host_image_file(input, os8_file, write_block, entry);
 /*
 bool error_p;
