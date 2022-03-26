@@ -31,6 +31,7 @@
 #include <ctype.h>
 #include <limits.h>
 #include <assert.h>
+#include <libgen.h>
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
@@ -775,14 +776,14 @@ bool lookup(const_str_t filename, directory_t directory, cursor_t *cursor,
     build_pattern(strip_device(filename), &pattern);
 
     while (valid_entry(cursor)) {
-        get_entry(cursor, entry);
-        if (!entry->empty_file && entry->length != 0) {
-            if (pattern_match_p(entry->name, pattern)) {
+        entry_t local_entry;
+        get_entry(cursor, &local_entry);
+        if (!local_entry.empty_file && local_entry.length != 0 &&
+            pattern_match_p(local_entry.name, pattern)) {
+                *entry = local_entry;
                 return true;
-            }
         }
     }
-
     return false;
 }
 
@@ -1301,10 +1302,86 @@ void print_directory(directory_t directory, long columns, const_str_t match_file
     printf("\n  %d Files In %d Blocks - %d Free Blocks\n", files, used, empty);
 }
 
-bool stream_host_image_file(FILE *input, int os8_file,
-                            block_io_t write_block, char *filename)
+void delete_entry(entry_t *entry)
 {
-return false;
+    /* scrunch the directory segment down to the end of the new
+       entry, accounting for the fact that we didn't remove the
+       file but will be changing it to an empty file.  The
+       order here is important.
+    */
+    fix_segment_down(*entry, empty_entry_length);
+    entry->empty_file = true; 
+    put_entry(*entry);        
+}
+
+/*
+  Makes a new OS/8 file.  It will delete the old one and return an
+  entry for an empty file that's at least as large as the size requested.
+
+  It allows one to request the largest available block by passing zero as
+  the size, just like OS/8, but this program doesn't use this.
+
+  Don't write more blocks than are contained in the empty file entry that
+  is returned!
+
+*/
+
+bool allocate_os8_file(char *filename, unsigned size, directory_t directory, entry_t *entry)
+{
+    entry_t exclude_entry = {0};
+    cursor_t cursor;
+
+    init_cursor(directory, &cursor);
+    if (lookup(filename, directory, &cursor, &exclude_entry)) {
+        delete_entry(&exclude_entry);
+    }
+
+    return get_empty_entry(directory, exclude_entry, entry, size);
+}
+
+/* You must call this with the entry passed back by get_empty_file */
+
+bool enter_os8_file(char *filename, unsigned size, directory_t directory, entry_t entry)
+{
+    if (enter(filename, size, directory, entry)) {
+        consolidate(directory);
+        return true;
+    }
+    return false;
+}
+
+
+bool stream_host_image_file(FILE *input, int os8_file, block_io_t write_block,
+                            directory_t directory, char *outputname, unsigned size)
+{
+    os8_block_t block;
+
+    entry_t entry;
+    if (!allocate_os8_file(outputname, size, directory, &entry)) {
+        return false;
+    }
+
+
+    unsigned block_no = 0;
+    int cnt;
+    while ((cnt = fread(block, 2, OS8_BLOCK_SIZE, input)) > 0) {
+        /* should never happen */
+        if (block_no >= entry.length) {
+            return false;
+        }
+
+        /* zero out the last block, though it is not necessary */
+        for (pdp8_word_t *p = block + cnt; p < block + OS8_BLOCK_SIZE;) {
+           *p++ = 0;
+        } 
+
+        if (!write_block(os8_file, entry.file_block + block_no, block)) {
+            return false;
+        }
+        block_no++;
+    }
+
+    return enter_os8_file(outputname, block_no, directory, entry);
 }
 
 bool stream_os8_image_file(entry_t entry, int os8_file,
@@ -1328,9 +1405,14 @@ bool stream_os8_image_file(entry_t entry, int os8_file,
     return true;
 }
 
-bool stream_host_text_file(FILE *input, int os8_file,
-                           block_io_t write_block, char *filename)
+
+bool stream_host_text_file(FILE *input, int os8_file, block_io_t write_block,
+                            directory_t directory, char *filename)
 {
+
+    /* we stream to a temp file, then do a stream_host_image_file on the
+       result.
+    */
     return false;
 }
 
@@ -1391,64 +1473,6 @@ bool print_os8_text_file(const_str_t filename, int os8_file,
     printf("OS/8 file not found\n");
     return false;
 }
-
-void delete_entry(entry_t *entry)
-{
-    /* scrunch the directory segment down to the end of the new
-       entry, accounting for the fact that we didn't remove the
-       file but will be changing it to an empty file.  The
-       order here is important.
-    */
-    fix_segment_down(*entry, empty_entry_length);
-    entry->empty_file = true; 
-    put_entry(*entry);        
-}
-
-bool delete_os8_files(char **argv, int first, int last, bool quiet_p, directory_t directory)
-
-/* We are guaranteed that all of the files on the command line are os8 files,
-   possibly wildcarded.
-
-   In theory one could track everything in a single pass but it is simpler to
-   delete files and fix the directory structure for each file.  So that's what
-   we do.
-*/
-{
-    int deleted_files = 0;
-    for (int i = first; i <= last; i++) {
-        cursor_t cursor;
-        entry_t entry;
-        init_cursor(directory, &cursor);
-        pattern_t pattern;
-
-        build_pattern(strip_device(argv[i]), &pattern);
-
-        while (valid_entry(&cursor)) {
-            peek_entry(cursor, &entry);
-            if (!entry.empty_file && entry.length != 0 &&
-                pattern_match_p(entry.name, pattern)) {
-                bool delete_file_p = true;
-                if (!quiet_p) {
-                    os8_filename_t filename;
-                    get_filename(entry.name, filename);
-                    printf("Delete file %s?", filename);
-                    delete_file_p = yes_no("");
-                }
-                if (delete_file_p) {
-                    delete_entry(&entry);
-                    deleted_files++;
-                }
-            }
-            advance_cursor(&cursor, entry);
-        }
-    }
-
-    consolidate(directory);
-
-    printf("%d files deleted\n", deleted_files);
-    return true;
-}
-
 bool copy_os8_files(char **argv, int first, int last, int os8_file,
                     block_io_t read_block, directory_t directory)
 
@@ -1524,52 +1548,13 @@ bool copy_os8_files(char **argv, int first, int last, int os8_file,
     return true;
 }
 
-/*
-  Makes a new OS/8 file.  It will delete the old one and return an
-  entry for an empty file that's at least as large as the size requested.
-
-  It allows one to request the largest available block by passing zero as
-  the size, just like OS/8, but this program doesn't use this.
-
-  Don't write more blocks than are contained in the empty file entry that
-  is returned!
-
-*/
-
-bool allocate_os8_file(char *filename, unsigned size, directory_t directory, entry_t *entry)
-{
-    entry_t exclude_entry = {0};
-    cursor_t cursor;
-
-    init_cursor(directory, &cursor);
-    if (lookup(filename, directory, &cursor, &exclude_entry)) {
-        delete_entry(&exclude_entry);
-    }
-
-    return get_empty_entry(directory, exclude_entry, entry, size);
-}
-
-/* You must call this with the entry passed back by get_empty_file */
-
-bool enter_os8_file(char *filename, unsigned size, directory_t directory, entry_t entry)
-{
-    if (enter(filename, size, directory, entry)) {
-        consolidate(directory);
-        return true;
-    }
-    return false;
-}
-
-/*
-*/
-
 bool copy_host_files(char **argv, int first, int last, int os8_file,
                     block_io_t write_block, directory_t directory)
 
 /* Copy from the host to the OS/8 device  image file.
 
-   We are guaranteed that all input files are host files which have legal os8 file names,
-   while the last has the "os8:" prefix. 
+   We are guaranteed that the last argument is a legal OS/8 device or
+   file spec.
 
    If there is only one file to copy we can copy to a specific s8 file, otherwise the
    target argument must be "os8:".
@@ -1595,17 +1580,38 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
             return false;
         }
 
-        os8_filename_t outputname = {'\0'};;
-        if (os8_devicename_p(argv[last])) {
-            strcat(outputname, argv[i]);
-        } else {
-            strcat(outputname, strip_device(argv[i]));
+        struct stat stat_buf;
+
+        if (fstat(fileno(input), &stat_buf) == -1) {
+            perror("stat of host file failed:");
+            return false;
         }
 
-        if (text_p) {
-            error_p = !stream_host_text_file(input, os8_file, write_block, outputname);
+        os8_filename_t outputname;
+        if (os8_devicename_p(argv[last])) {
+            char *path = strdup(argv[i]);
+            char *base = basename(path);
+            if (!os8_filename_p(base)) {
+                printf("\"%s\" is not a legal OS/8 filename\n", path);
+                return false;
+            }
+            strcat(outputname, base);
         } else {
-            error_p = !stream_host_image_file(input, os8_file, write_block, outputname);
+            strcat(outputname, strip_device(argv[last]));
+        }
+
+        /* For get_empty_entry() - we'll close the file with how much we
+           actually read.  We don't use this for text files because we'll
+           add <cr> chars before newlines and a ^Z at the end.
+        */
+        unsigned output_size = stat_buf.st_size / (OS8_BLOCK_SIZE * 2) +
+                               (stat_buf.st_size % (OS8_BLOCK_SIZE * 2) != 0);
+        if (text_p) {
+            error_p = !stream_host_text_file(input, os8_file,  write_block, directory,
+                                              outputname);
+        } else {
+            error_p = !stream_host_image_file(input, os8_file,  write_block, directory,
+                                              outputname, output_size);
         }
 
         if (error_p) {
@@ -1615,6 +1621,52 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
     }
     return true;
 }
+
+bool delete_os8_files(char **argv, int first, int last, bool quiet_p, directory_t directory)
+
+/* We are guaranteed that all of the files on the command line are os8 files,
+   possibly wildcarded.
+
+   In theory one could track everything in a single pass but it is simpler to
+   delete files and fix the directory structure for each file.  So that's what
+   we do.
+*/
+{
+    int deleted_files = 0;
+    for (int i = first; i <= last; i++) {
+        cursor_t cursor;
+        entry_t entry;
+        init_cursor(directory, &cursor);
+        pattern_t pattern;
+
+        build_pattern(strip_device(argv[i]), &pattern);
+
+        while (valid_entry(&cursor)) {
+            peek_entry(cursor, &entry);
+            if (!entry.empty_file && entry.length != 0 &&
+                pattern_match_p(entry.name, pattern)) {
+                bool delete_file_p = true;
+                if (!quiet_p) {
+                    os8_filename_t filename;
+                    get_filename(entry.name, filename);
+                    printf("Delete file %s?", filename);
+                    delete_file_p = yes_no("");
+                }
+                if (delete_file_p) {
+                    delete_entry(&entry);
+                    deleted_files++;
+                }
+            }
+            advance_cursor(&cursor, entry);
+        }
+    }
+
+    consolidate(directory);
+
+    printf("%d files deleted\n", deleted_files);
+    return true;
+}
+
 
 /* Command line processing and main program */
 
@@ -1890,16 +1942,6 @@ int main(int argc, char *argv[])
                 if (!want_os8_files_p(argv, optind, argc - 2, false)) {
                     printf("Can only copy host files to an OS/8 file or directory\n");
                     command_err_p = true;
-                }
-                /* This doesn't contradict the above, which is weeding out "os8:" names */
-                if (os8_devicename_p(argv[argc - 1])) {
-                    /* we'll be using the input filename as the OS/8 filename */
-                    for (int i = optind; i < argc - 1; i++) {
-                        if (!os8_filename_p(argv[i])) {
-                           printf("\"%s\" is not a legal OS/8 filename\n", argv[i]);
-                           command_err_p = true;
-                        }
-                    }
                 }
             } else {
                 command = copy_from_os8;

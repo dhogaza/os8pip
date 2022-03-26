@@ -6,3 +6,5 @@ os8pip
 *.dsk
 *.base
 *.bak
+test/
+bak/
