@@ -1,5 +1,6 @@
 # os8pip utility
-Provides OS/8 PIP-like functionality on Mac OS/X.
+Provides OS/8 PIP-like functionality for OS/8 device files on Mac
+OS/X.
 
 Inspired in part by Vincent Slyngstad's Perl scripts that work
 on OS/8 device files.
