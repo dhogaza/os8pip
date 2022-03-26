@@ -51,11 +51,11 @@ os8pip --os8 mydisk.rk05 os8:help.he
 
 Copy files from an OS/8 device file to the host:
 
-os8pip --os8 mydisk.rk05 os8:b*.* os8:pal8.pa .
+os8pip --os8 mydisk.rk05 os8:b*.* os8:pal8.pa dir_file
 
 Copy files from the host to an OS/8 device file:
 
-os8pip --os8 mydisk.rk05
+os8pip --os8 mydisk.rk05 *.pa os8:
 
 Delete files from the OS/8 device file:
 
