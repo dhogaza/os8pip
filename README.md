@@ -1,5 +1,6 @@
 # os8pip utility
-Provides OS/8 PIP-like functionality on Mac OS/X.
+Provides OS/8 PIP-like functionality for OS/8 device files on Mac
+OS/X.
 
 Inspired in part by Vincent Slyngstad's Perl scripts that work
 on OS/8 device files.
@@ -37,7 +38,7 @@ project.
 Not that there's anything wrong with OS/8 TECO, I was one of those
 who got the first version going (PS/8 TECO) and sent it to DEC...
 
-Device files with the default extensions (.rk05, .dsk, .tu56, .dt8)
+Device files with the default extensions .rk05, .dsk, .tu56, or .dt8
 are automatically recognized but can be overridden with the switches
 --rk05, --dsk, --tu56, --dt8.
  
@@ -51,11 +52,11 @@ os8pip --os8 mydisk.rk05 os8:help.he
 
 Copy files from an OS/8 device file to the host:
 
-os8pip --os8 mydisk.rk05 os8:b*.* os8:pal8.pa .
+os8pip --os8 mydisk.rk05 os8:b*.* os8:pal8.pa dir_file
 
 Copy files from the host to an OS/8 device file:
 
-os8pip --os8 mydisk.rk05
+os8pip --os8 mydisk.rk05 *.pa os8:
 
 Delete files from the OS/8 device file:
 
