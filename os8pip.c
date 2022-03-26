@@ -753,8 +753,8 @@ bool get_empty_entry(directory_t directory, entry_t exclude_entry,
     init_cursor(directory, &cursor);
     while (valid_entry(&cursor)) {
         get_entry(&cursor, &entry);
-        if (entry.dir_block != exclude_entry.dir_block &&
-            entry.file_number != exclude_entry.file_number &&
+        if ((entry.dir_block != exclude_entry.dir_block ||
+             entry.file_number != exclude_entry.file_number) &&
             entry.empty_file && entry.length >= length &&
            (best_entry->length == 0 ||
             (length == 0 ? entry.length > best_entry->length :
