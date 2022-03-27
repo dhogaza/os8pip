@@ -1,6 +1,6 @@
 /* 
    Provides much of the functionality of OS/8's PIP program, directly on
-   device image files.
+   OS/8 device image files.
 
    Copyright (c) 2022 Don R Baccus
 
@@ -79,7 +79,7 @@ typedef struct {
             pdp8_word_t next_segment; /* device block number, 0 flags last segment */
             pdp8_word_t flag_word; /* 0 no tentative entry, 01400-01777 otherwise */
             pdp8_word_t additional_words; /* negative 12 bits, usually -1 i.e. date word */
-            pdp8_word_t file_entries[OS8_BLOCK_SIZE - 5 * sizeof(pdp8_word_t)];
+            pdp8_word_t file_entries[];
         } dir_struct;
         os8_block_t data;
     } d;
@@ -499,7 +499,7 @@ bool valid_entry(cursor_t *cursor)
         cursor->file_number = 1;
         cursor->dir_block = &(cursor->dir[next_segment - 1]);
         cursor->next_block = cursor->dir_block->d.dir_struct.first_file_block;
-        cursor->entry = &(cursor->dir_block->d.dir_struct.file_entries[0]); 
+        cursor->entry = cursor->dir_block->d.dir_struct.file_entries; 
     }
     return true;
 }
@@ -1356,21 +1356,24 @@ bool stream_host_image_file(FILE *input, int os8_file, block_io_t write_block,
 {
     os8_block_t block;
 
+    /* Compute size for get_empty_entry */
+    unsigned output_size = (size + (OS8_BLOCK_SIZE - 1) * 2)  /
+                           (OS8_BLOCK_SIZE * 2);
     entry_t entry;
-    if (!allocate_os8_file(outputname, size, directory, &entry)) {
+    if (!allocate_os8_file(outputname, output_size, directory, &entry)) {
         return false;
     }
-
 
     unsigned block_no = 0;
     int cnt;
     while ((cnt = fread(block, 2, OS8_BLOCK_SIZE, input)) > 0) {
+
         /* should never happen */
         if (block_no >= entry.length) {
             return false;
         }
 
-        /* zero out the last block, though it is not necessary */
+        /* zero out the rest of te  block to avoid "data corrupted" message */
         for (pdp8_word_t *p = block + cnt; p < block + OS8_BLOCK_SIZE;) {
            *p++ = 0;
         } 
@@ -1397,7 +1400,7 @@ bool stream_os8_image_file(entry_t entry, int os8_file,
         if (!read_block(os8_file, block_no, block)) {
             return false;
         }
-        if ((cnt = fwrite(block, 1, sizeof(block), output)) != sizeof(block)) {
+        if ((cnt = fwrite(block, 2, OS8_BLOCK_SIZE, output)) != OS8_BLOCK_SIZE) {
             return false;
         }
     }
@@ -1405,15 +1408,85 @@ bool stream_os8_image_file(entry_t entry, int os8_file,
     return true;
 }
 
-
-bool stream_host_text_file(FILE *input, int os8_file, block_io_t write_block,
-                            directory_t directory, char *filename)
+/* helper for stream_host_text_file since we output <cr> chars before
+   <lf> chars in most cases.
+*/
+bool put_os8_char(FILE *t, pdp8_word_t ch)
 {
+    static int i = 0;
+    static pdp8_word_t w[2];
+    switch (i % 3) {
+    case 0:
+        w[0] = ch;
+        break;
+    case 1:
+        w[1] = ch;
+        break;
+    case 2:
+        w[0] |= (ch & 0360) << 4;
+        w[1] |= (ch & 017) << 8;
+        if (fwrite(w, sizeof(pdp8_word_t), 2, t) != 2) {
+            perror("error writing temp file");
+            return false;
+        }
+        break;
+    }
+    i++;
+    return true;
+}
 
-    /* we stream to a temp file, then do a stream_host_image_file on the
-       result.
-    */
-    return false;
+/* This function streams to a temp file, then calls stream_host_image_file
+   to write the result to the OS/8 device file.  We do this because we'll
+   add <cr>s in front of newlines, which  makes the file longer, which means
+   that you can't use the size of the input file to ask for an emply slot
+   on the OS/8 filesystem.
+*/
+bool stream_host_text_file(FILE *input, int os8_file, block_io_t write_block,
+                            directory_t directory, char *outputname)
+{
+    struct stat stat_buf;
+    FILE *t = tmpfile();
+
+    char c;
+    bool ctrl_z_seen;
+
+    while ((c = fgetc(input)) != EOF && !ctrl_z_seen) {
+        bool first_lf = true;
+        ctrl_z_seen = c == '\032';
+        if (c == '\012'  && first_lf) {
+            put_os8_char(t, 0215);
+        }
+        first_lf = (c != '\012') && (c != '\015');
+        if (c != '\0') {
+            put_os8_char(t, c | 0200); /* always set the mark bit */
+        }
+    }
+
+    /* OS/8 will be very unhappy without its ^Z at the end */
+    if (!ctrl_z_seen) {
+        put_os8_char(t, 0232);
+    }
+
+    /* flush partial output */
+    put_os8_char(t, 0);
+    put_os8_char(t, 0);
+
+    fflush(t);
+    fseek(t, 0, SEEK_SET);
+
+    if (fstat(fileno(t), &stat_buf) == -1) {
+        perror("stat");
+        return false;
+    }
+
+    if (!stream_host_image_file(t, os8_file,  write_block, directory,
+                                outputname, stat_buf.st_size)) {
+        return false;
+    }
+
+    fclose(t);
+
+    return true;
 }
 
 bool stream_os8_text_file(entry_t entry, int os8_file,
@@ -1587,7 +1660,7 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
             return false;
         }
 
-        os8_filename_t outputname;
+        os8_filename_t outputname = {'\0'};
         if (os8_devicename_p(argv[last])) {
             char *path = strdup(argv[i]);
             char *base = basename(path);
@@ -1599,19 +1672,12 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
         } else {
             strcat(outputname, strip_device(argv[last]));
         }
-
-        /* For get_empty_entry() - we'll close the file with how much we
-           actually read.  We don't use this for text files because we'll
-           add <cr> chars before newlines and a ^Z at the end.
-        */
-        unsigned output_size = stat_buf.st_size / (OS8_BLOCK_SIZE * 2) +
-                               (stat_buf.st_size % (OS8_BLOCK_SIZE * 2) != 0);
         if (text_p) {
             error_p = !stream_host_text_file(input, os8_file,  write_block, directory,
                                               outputname);
         } else {
             error_p = !stream_host_image_file(input, os8_file,  write_block, directory,
-                                              outputname, output_size);
+                                              outputname, stat_buf.st_size);
         }
 
         if (error_p) {
