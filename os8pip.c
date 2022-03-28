@@ -50,11 +50,11 @@ typedef const char * const_str_t;
 #define DECTAPE_BLOCKS OS8_DECTAPE_LENGTH / (OS8_BLOCK_SIZE * 2)
 
 /* Mac PDP-8/e simulator packs two 12-bit words in three bytes */
-const unsigned RK05_BLOCK_SIZE = 384; /* 256 words */
-const unsigned RK05_RKB_OFFSET = 3248; /* blocks */
+#define RK05_BLOCK_SIZE 384
+#define RK05_RKB_OFFSET 3248
 
 #define DIR_LENGTH 6
-const unsigned FIRST_DIR_BLOCK=1;
+#define FIRST_DIR_BLOCK 1
 
 typedef struct {
     unsigned last_block_no;
@@ -121,7 +121,7 @@ typedef struct {
     pdp8_word_t additional_count;
 } entry_t;
 
-const unsigned empty_entry_length = 2; /* flag + length words */
+#define EMPTY_ENTRY_LENGTH 2
 
 typedef enum {unknown, dectape, dsk, rk05, tu56} format_t;
 typedef enum {base, rka, rkb} rk05_filesystem_t; /* currently RK05 RKA and RKB only */
@@ -515,7 +515,7 @@ unsigned file_entry_length(dir_struct_t dir_struct)
 
 unsigned entry_length(entry_t entry)
 {
-    return entry.empty_file ? empty_entry_length :
+    return entry.empty_file ? EMPTY_ENTRY_LENGTH :
                               file_entry_length(entry.dir_block->d.dir_struct);
 }
 
@@ -818,7 +818,7 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
        Testing shows that OS/8's USR MENTER routine doesn't entirely fill up a
        segment so we won't either, as doing so might break the real thing.
     */
-    unsigned min_free_length = new_entry_length + empty_entry_length;
+    unsigned min_free_length = new_entry_length + EMPTY_ENTRY_LENGTH;
 
     while ((unused_ptr = get_unused_ptr(entry.dir_block, min_free_length)) == NULL) {
         /*
@@ -1312,7 +1312,7 @@ void delete_entry(entry_t *entry)
        file but will be changing it to an empty file.  The
        order here is important.
     */
-    fix_segment_down(*entry, empty_entry_length);
+    fix_segment_down(*entry, EMPTY_ENTRY_LENGTH);
     entry->empty_file = true; 
     put_entry(*entry);        
 }
