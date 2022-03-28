@@ -6,5 +6,7 @@ os8pip
 *.dsk
 *.base
 *.bak
+*.dmp
+*.tmp
 test/
 bak/

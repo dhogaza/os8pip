@@ -32,6 +32,7 @@
 #include <limits.h>
 #include <assert.h>
 #include <libgen.h>
+#include <sys/file.h>
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
@@ -43,10 +44,10 @@ typedef const char * const_str_t;
 #define OS8_BLOCK_SIZE 256
 
 /* The following DECTape constants are in bytes */
-const unsigned DECTAPE_BLOCK_SIZE = 258;
-const unsigned DECTAPE_LENGTH = 380292; /* there are better ways of determining the type */
-const unsigned OS8_DECTAPE_LENGTH = 377344;
-const unsigned DECTAPE_BLOCKS = OS8_DECTAPE_LENGTH / (OS8_BLOCK_SIZE * 2);
+#define DECTAPE_BLOCK_SIZE 258
+#define DECTAPE_LENGTH 380292
+#define OS8_DECTAPE_LENGTH 377344
+#define DECTAPE_BLOCKS OS8_DECTAPE_LENGTH / (OS8_BLOCK_SIZE * 2)
 
 /* Mac PDP-8/e simulator packs two 12-bit words in three bytes */
 const unsigned RK05_BLOCK_SIZE = 384; /* 256 words */
