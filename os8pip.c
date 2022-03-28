@@ -71,16 +71,18 @@ typedef pdp8_word_t os8_block_t[OS8_BLOCK_SIZE];
 /* OS/8 directory structure */
 
 typedef struct {
+    pdp8_word_t number_files; /* negative 12 bits */
+    pdp8_word_t first_file_block;
+    pdp8_word_t next_segment; /* device block number, 0 flags last segment */
+    pdp8_word_t flag_word; /* 0 no tentative entry, 01400-01777 otherwise */
+    pdp8_word_t additional_words; /* negative 12 bits, usually -1 i.e. date word */
+    pdp8_word_t file_entries[];
+} dir_struct_t;
+
+typedef struct {
     bool dirty; /* if we modify the directory segment we need to write it out */
     union {
-        struct {
-            pdp8_word_t number_files; /* negative 12 bits */
-            pdp8_word_t first_file_block;
-            pdp8_word_t next_segment; /* device block number, 0 flags last segment */
-            pdp8_word_t flag_word; /* 0 no tentative entry, 01400-01777 otherwise */
-            pdp8_word_t additional_words; /* negative 12 bits, usually -1 i.e. date word */
-            pdp8_word_t file_entries[];
-        } dir_struct;
+        dir_struct_t dir_struct;
         os8_block_t data;
     } d;
 } dir_block_t;
@@ -504,16 +506,16 @@ bool valid_entry(cursor_t *cursor)
     return true;
 }
 
-unsigned file_entry_length(dir_block_t *dir_block)
+unsigned file_entry_length(dir_struct_t dir_struct)
 {
     return sizeof(name_t) / sizeof(pdp8_word_t) + 1 +
-           negate(dir_block->d.dir_struct.additional_words);
+           negate(dir_struct.additional_words);
 }
 
 unsigned entry_length(entry_t entry)
 {
     return entry.empty_file ? empty_entry_length :
-                              file_entry_length(entry.dir_block);
+                              file_entry_length(entry.dir_block->d.dir_struct);
 }
 
 /* Move cursor to the next file in the a directory segment */
@@ -809,7 +811,7 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
     cursor_t cursor;
     pdp8_word_t *unused_ptr;
 
-    unsigned new_entry_length = file_entry_length(entry.dir_block);
+    unsigned new_entry_length = file_entry_length(entry.dir_block->d.dir_struct);
 
     /*
        Testing shows that OS/8's USR MENTER routine doesn't entirely fill up a
