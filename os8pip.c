@@ -507,16 +507,16 @@ bool valid_entry(cursor_t *cursor)
     return true;
 }
 
-unsigned file_entry_length(dir_struct_t dir_struct)
+unsigned file_entry_length(dir_block_t *dir_block)
 {
     return sizeof(name_t) / sizeof(pdp8_word_t) + 1 +
-           negate(dir_struct.additional_words);
+           negate(dir_block->d.dir_struct.additional_words);
 }
 
 unsigned entry_length(entry_t entry)
 {
     return entry.empty_file ? EMPTY_ENTRY_LENGTH :
-                              file_entry_length(entry.dir_block->d.dir_struct);
+                              file_entry_length(entry.dir_block);
 }
 
 /* Move cursor to the next file in the a directory segment */
@@ -812,7 +812,7 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
     cursor_t cursor;
     pdp8_word_t *unused_ptr;
 
-    unsigned new_entry_length = file_entry_length(entry.dir_block->d.dir_struct);
+    unsigned new_entry_length = file_entry_length(entry.dir_block);
 
     /*
        Testing shows that OS/8's USR MENTER routine doesn't entirely fill up a
