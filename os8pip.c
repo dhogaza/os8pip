@@ -1640,7 +1640,7 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
        in Unix-like systems.
     */
 
-    if ((last - first >= 1 && !os8_devicename_p(argv[last]))) {
+    if ((last - first > 1 && !os8_devicename_p(argv[last]))) {
         printf("Output file must be \"os8\"\n");
         return false;
     }
