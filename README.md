@@ -60,7 +60,7 @@ os8pip --os8 mydisk.rk05 *.pa os8:
 
 Delete files from the OS/8 device file:
 
-os8pip --os8 mytape.tu56 os8:b*.* os8:pal8.pa [--quiet]
+os8pip --os8 mytape.tu56 os8:b*.* os8:pal8.pa --delete [--quiet]
  
 Create a new os8 user device file (no system area), giving an
 error if the file already exists:
