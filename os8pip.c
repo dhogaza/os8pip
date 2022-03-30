@@ -42,6 +42,7 @@ typedef char * str_t;
 typedef const char * const_str_t;
 
 #define OS8_BLOCK_SIZE 256
+#define OS8_BLOCK_CHAR_SIZE 384
 
 /* The following DECTape constants are in bytes */
 #define DECTAPE_BLOCK_SIZE 258
@@ -239,24 +240,30 @@ typedef enum {text_type, binary_type, unknown_type} filename_type_t;
 
 filename_type_t filename_type(char *filename)
 {
-    static char* text_extensions[] = {
-        ".ba", /* BASIC Source */
-        ".bi", /* BATCH Input */
-        ".fc", /* FOCAL Source */
-        ".ft", /* FORTRAN Source */
-        ".he", /* HELP */
-        ".hl", /* HELP */
-        ".ls", /* Listing */
-        ".ma", /* MACRO Source */
-        ".pa", /* PAL Source */
-        ".ps", /* Pascal Source */
-        ".ra", /* RALF Source */
-        ".ro", /* Runoff Source */
-        ".sb", /* SABR Source */
-        ".sl", /* SABR Source */
-        ".te", /* TECO File */
-        ".tx", /* Text File */
-        NULL
+    typedef struct {
+        char *extension;
+        filename_type_t type;
+    } map_t;
+
+    static map_t map[] = {
+        {".ba", text_type}, /* BASIC Source */
+        {".bi", text_type}, /* BATCH Input */
+        {".fc", text_type}, /* FOCAL Source */
+        {".ft", text_type}, /* FORTRAN Source */
+        {".he", text_type}, /* HELP */
+        {".hl", text_type}, /* HELP */
+        {".ls", text_type}, /* Listing */
+        {".ma", text_type}, /* MACRO Source */
+        {".pa", text_type}, /* PAL Source */
+        {".ps", text_type}, /* Pascal Source */
+        {".ra", text_type}, /* RALF Source */
+        {".ro", text_type}, /* Runoff Source */
+        {".sb", text_type}, /* SABR Source */
+        {".sl", text_type}, /* SABR Source */
+        {".te", text_type}, /* TECO File */
+        {".tx", text_type}, /* Text File */
+        {".bn", binary_type},
+        {NULL, unknown_type}
     };
 
     char *dot_pos;
@@ -268,9 +275,9 @@ filename_type_t filename_type(char *filename)
     char extension[strlen(dot_pos)];
     strcpy(extension, dot_pos);
     convert_lower(extension);
-    for (char **p = text_extensions; *p != NULL; p++) {
-        if (strcmp(extension, *p) == 0) {
-            return text_type;
+    for (map_t *p = map; p->extension != NULL; p++) {
+        if (strcmp(extension, p->extension) == 0) {
+            return p->type;
         }
     }
     return unknown_type;
@@ -1390,6 +1397,157 @@ bool stream_host_image_file(FILE *input, int os8_file, block_io_t write_block,
     return enter_os8_file(outputname, block_no, directory, entry);
 }
 
+/* helper for stream_host_text_file since we output <cr> chars before
+   <lf> chars in most cases.
+*/
+
+static int host_char_cnt = 0;
+
+bool put_host_char(FILE *t, pdp8_word_t ch)
+{
+    static pdp8_word_t w[2];
+
+    switch (host_char_cnt % 3) {
+    case 0:
+        w[0] = ch;
+        break;
+    case 1:
+        w[1] = ch;
+        break;
+    case 2:
+        w[0] |= (ch & 0360) << 4;
+        w[1] |= (ch & 017) << 8;
+        if (fwrite(w, sizeof(pdp8_word_t), 2, t) != 2) {
+            perror("error writing temp file");
+            return false;
+        }
+        break;
+    }
+    host_char_cnt++;
+    return true;
+}
+
+/* This function streams to a temp file, then calls stream_host_image_file
+   to write the result to the OS/8 device file.  We do this because we'll
+   add <cr>s in front of newlines, which  makes the file longer, which means
+   that you can't use the size of the input file to ask for an emply slot
+   on the OS/8 filesystem.
+*/
+bool stream_host_text_file(FILE *input, int os8_file, block_io_t write_block,
+                            directory_t directory, char *outputname)
+{
+    struct stat stat_buf;
+    FILE *t = tmpfile();
+
+    int c;
+    bool ctrl_z_seen;
+    host_char_cnt = 0;
+
+    while ((c = fgetc(input)) != EOF && !ctrl_z_seen) {
+        bool first_lf = true;
+        ctrl_z_seen = c == '\032';
+        if (c == '\012'  && first_lf) {
+            if (!put_host_char(t, 0215)) {
+                return false;
+            }
+        }
+        first_lf = (c != '\012') && (c != '\015');
+        if (c != '\0') {
+            if (!put_host_char(t, c | 0200)) { /* always set the mark bit */
+                return false;
+            }
+        }
+    }
+
+    /* OS/8 will be very unhappy without its ^Z at the end */
+    if (!ctrl_z_seen) {
+        if (!put_host_char(t, 0232)) {
+            return false;
+        }
+    }
+
+    /* flush partial output */
+    if (!put_host_char(t, 0)) {
+        return false;
+    }
+    if (!put_host_char(t, 0)) {
+        return false;
+    }
+
+    fflush(t);
+    fseek(t, 0, SEEK_SET);
+
+    if (fstat(fileno(t), &stat_buf) == -1) {
+        perror("stat");
+        return false;
+    }
+
+    if (!stream_host_image_file(t, os8_file,  write_block, directory,
+                                outputname, stat_buf.st_size)) {
+        return false;
+    }
+
+    fclose(t);
+
+    return true;
+}
+
+/* This works like stream_host_text_file, but without diddling characters.
+   It doesn't really need to write to a temp file as it does and this is
+   a bit inefficient, but allows it to borrow code from the former.  In
+   fact they could be rolled into one but I'm too lazy to do it.
+*/
+bool stream_host_binary_file(FILE *input, int os8_file, block_io_t write_block,
+                            directory_t directory, char *outputname)
+{
+    struct stat stat_buf;
+    FILE *t = tmpfile();
+
+    int c;
+    host_char_cnt = 0;
+    bool ctrl_z_seen;
+
+    while ((c = fgetc(input)) != EOF && !ctrl_z_seen) {
+        c &= 0377;
+        ctrl_z_seen = c == 0232;
+        if (!put_host_char(t, c)) {
+            return false;
+        }
+    }
+
+    /* OS/8 will be very unhappy without its ^Z at the end */
+    if (!ctrl_z_seen) {
+        if (!put_host_char(t, 0232)) {
+            return false;
+        }
+    }
+
+    /* flush partial output */
+    if (!put_host_char(t, 0)) {
+        return false;
+    }
+    if (!put_host_char(t, 0)) {
+        return false;
+    }
+
+    fflush(t);
+    fseek(t, 0, SEEK_SET);
+
+    if (fstat(fileno(t), &stat_buf) == -1) {
+        perror("stat");
+        return false;
+    }
+
+    if (!stream_host_image_file(t, os8_file,  write_block, directory,
+                                outputname, stat_buf.st_size)) {
+        return false;
+    }
+
+    fclose(t);
+
+    return true;
+}
+
 bool stream_os8_image_file(entry_t entry, int os8_file,
                           block_io_t read_block, FILE *output)
 {
@@ -1411,95 +1569,15 @@ bool stream_os8_image_file(entry_t entry, int os8_file,
     return true;
 }
 
-/* helper for stream_host_text_file since we output <cr> chars before
-   <lf> chars in most cases.
-*/
-bool put_os8_char(FILE *t, pdp8_word_t ch)
-{
-    static int i = 0;
-    static pdp8_word_t w[2];
-    switch (i % 3) {
-    case 0:
-        w[0] = ch;
-        break;
-    case 1:
-        w[1] = ch;
-        break;
-    case 2:
-        w[0] |= (ch & 0360) << 4;
-        w[1] |= (ch & 017) << 8;
-        if (fwrite(w, sizeof(pdp8_word_t), 2, t) != 2) {
-            perror("error writing temp file");
-            return false;
-        }
-        break;
-    }
-    i++;
-    return true;
-}
-
-/* This function streams to a temp file, then calls stream_host_image_file
-   to write the result to the OS/8 device file.  We do this because we'll
-   add <cr>s in front of newlines, which  makes the file longer, which means
-   that you can't use the size of the input file to ask for an emply slot
-   on the OS/8 filesystem.
-*/
-bool stream_host_text_file(FILE *input, int os8_file, block_io_t write_block,
-                            directory_t directory, char *outputname)
-{
-    struct stat stat_buf;
-    FILE *t = tmpfile();
-
-    char c;
-    bool ctrl_z_seen;
-
-    while ((c = fgetc(input)) != EOF && !ctrl_z_seen) {
-        bool first_lf = true;
-        ctrl_z_seen = c == '\032';
-        if (c == '\012'  && first_lf) {
-            put_os8_char(t, 0215);
-        }
-        first_lf = (c != '\012') && (c != '\015');
-        if (c != '\0') {
-            put_os8_char(t, c | 0200); /* always set the mark bit */
-        }
-    }
-
-    /* OS/8 will be very unhappy without its ^Z at the end */
-    if (!ctrl_z_seen) {
-        put_os8_char(t, 0232);
-    }
-
-    /* flush partial output */
-    put_os8_char(t, 0);
-    put_os8_char(t, 0);
-
-    fflush(t);
-    fseek(t, 0, SEEK_SET);
-
-    if (fstat(fileno(t), &stat_buf) == -1) {
-        perror("stat");
-        return false;
-    }
-
-    if (!stream_host_image_file(t, os8_file,  write_block, directory,
-                                outputname, stat_buf.st_size)) {
-        return false;
-    }
-
-    fclose(t);
-
-    return true;
-}
-
-bool stream_os8_text_file(entry_t entry, int os8_file,
+bool stream_os8_byte_file(entry_t entry, filename_type_t type, int os8_file,
                           block_io_t read_block, FILE *output)
 {
     os8_block_t block;
     bool eof_p = false;
     pdp8_word_t block_no = entry.file_block;
     unsigned cnt = 0;
-
+    pdp8_word_t mask = type == text_type ? 0177 : 0377;
+ 
     while (!eof_p) {
         char ch;
         if (!read_block(os8_file, block_no, block)) {
@@ -1511,23 +1589,27 @@ bool stream_os8_text_file(entry_t entry, int os8_file,
         while (!eof_p && block_ptr < block + OS8_BLOCK_SIZE) {
             switch (cnt % 3) {
             case 0:
-                ch = *block_ptr & 0177;
+                ch = *block_ptr & mask;
                 break;
             case 1:
-                ch = *(block_ptr + 1) & 0177;
+                ch = *(block_ptr + 1) & mask;
                 break;
             case 2:
-                ch = ((*block_ptr >> 4) & 0160) | *(block_ptr + 1) >> 8;
+                ch = ((*block_ptr >> 4) & (mask & 0360)) | *(block_ptr + 1) >> 8;
                 block_ptr += 2;
                 break;
             }
-            if (ch != 0177 &&
-                ch != 015 &&
-                ch != 0 &&
-                ch != 032) {
+            if (type == text_type) {
+                if (ch != 0177 &&
+                    ch != 015 &&
+                    ch != 0 &&
+                    ch != 032) {
+                        putc(ch, output);
+                    }
+                   eof_p = ch == 032;
+            } else {
                 putc(ch, output);
             }
-            eof_p = ch == 032;
             cnt++;
         }
         block_no++;
@@ -1544,7 +1626,7 @@ bool print_os8_text_file(const_str_t filename, int os8_file,
     entry_t entry;
     init_cursor(directory, &cursor);
     if (lookup(filename, directory, &cursor, &entry)) {
-        return stream_os8_text_file(entry, os8_file, read_block, stdout);
+        return stream_os8_byte_file(entry, text_type, os8_file, read_block, stdout);
     }
     printf("OS/8 file not found\n");
     return false;
@@ -1599,18 +1681,23 @@ bool copy_os8_files(char **argv, int first, int last, int os8_file,
                 strcat(output_path, filename);
             } 
 
-            bool text_p = filename_type(filename) == text_type;
+            filename_type_t type = filename_type(filename);
             FILE *output;
-            if ((output = fopen(output_path, text_p ? "w" : "wb")) == NULL) {
+            if ((output = fopen(output_path, type == text_type ? "w" : "wb")) == NULL) {
                 perror("Error opening output file:");
                 return false;
             }
 
             bool error_p;
-            if (text_p) {
-                error_p = !stream_os8_text_file(entry, os8_file, read_block, output);
-            } else {
+
+            switch (type) {
+            case text_type:
+            case binary_type:
+                error_p = !stream_os8_byte_file(entry, type, os8_file, read_block, output);
+                break;
+            case unknown_type:
                 error_p = !stream_os8_image_file(entry, os8_file, read_block, output);
+                break;
             }
 
             fclose(output);
@@ -1645,13 +1732,13 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
         return false;
     }
 
-    bool text_p;
     bool error_p = false;
+    filename_type_t type;
 
     for (int i = first; i < last && !error_p; i++) {
-        text_p = filename_type(argv[i]) == text_type;
+        type = filename_type(argv[i]);
         FILE *input;
-        if ((input = fopen(argv[i], text_p ? "r" : "rb")) == NULL) {
+        if ((input = fopen(argv[i], type == text_type ? "r" : "rb")) == NULL) {
             perror("Error opening input file:");
             return false;
         }
@@ -1675,12 +1762,20 @@ bool copy_host_files(char **argv, int first, int last, int os8_file,
         } else {
             strcat(outputname, strip_device(argv[last]));
         }
-        if (text_p) {
+
+        switch (type) {
+        case text_type:
             error_p = !stream_host_text_file(input, os8_file,  write_block, directory,
-                                              outputname);
-        } else {
+                                             outputname);
+            break;
+        case binary_type:
+            error_p = !stream_host_binary_file(input, os8_file,  write_block, directory,
+                                               outputname);
+            break;
+        case unknown_type:
             error_p = !stream_host_image_file(input, os8_file,  write_block, directory,
                                               outputname, stat_buf.st_size);
+            break;
         }
 
         if (error_p) {
