@@ -63,9 +63,9 @@ typedef struct {
     unsigned size;
 } device_t;
 
-/* Byte buffer must be arge enough to hold 2 129-word DECTape blocks.  This
+/* Byte buffer must be large enough to hold 2 129-word DECTape blocks.  This
    is large enough to hold an RK05 block with two words backed into three
-   bytes, as well as n Simh block in dsk format
+   bytes, as well as a Simh block in dsk format.
 */
 typedef unsigned char byte_buffer_t[OS8_BLOCK_SIZE * 2 + 2];
 typedef pdp8_word_t os8_block_t[OS8_BLOCK_SIZE];
@@ -105,6 +105,7 @@ typedef struct {
 
 /* sixbit name representation */
 typedef pdp8_word_t name_t[4];
+
 /* up to a six character filename part, ".", and a two character
    extension, and the null terminator.
 */
@@ -365,10 +366,11 @@ void build_sixbit(const_str_t filename, name_t name)
             i = 6;
             continue;
         }
-        /* handle all the cases! */
 
+        /* handle all the cases! */
         char c = tolower(*s);
         c = c < (char) 0140 ? c : c - (char) 0140;
+
         name[i/2] = i & 1 ? (pdp8_word_t)(c) | name[i/2] : (pdp8_word_t)(c) << 6;
         i++;
     }
@@ -656,7 +658,7 @@ void consolidate(directory_t directory)
     one pass and do it to all of the segments rather than just one.
 
     Just like the CONSOL routine we do each segment individually, which
-    can leave and empty entry at the end of one segment abutting an empty
+    can leave an empty entry at the end of one segment abutting an empty
     entry at the beginning of the next block.
 
     We consolidate two empty files that are adjacent and also zero-length
@@ -938,14 +940,6 @@ bool enter(const_str_t filename, const int length, directory_t directory, entry_
     /* write over old empty file to save its diminished length */
     put_entry(entry);
 
-//    if ((entry.length -= length) == 0) {
-//        /* wipe out our empty file of length zero */
-//        fix_segment_down(entry, 0);
-//        bump_number_files(entry.dir_block, -1);
-//    } else {
-//        /* write over old empty file to save its diminished length */
-//        put_entry(entry);
-//    }
     consolidate(directory);
     return true;
 }
@@ -1217,10 +1211,10 @@ bool create_filesystem(block_io_t write_block, int os8_file,
     device_t device;
     get_device(&device, format);
 
-    for (dir_block_t *block_ptr = &directory[0]; block_ptr < directory + DIR_LENGTH;
+    for (dir_block_t *block_ptr = directory; block_ptr < directory + DIR_LENGTH;
          block_ptr++) {
         block_ptr->dirty = false;
-        for (pdp8_word_t *data_ptr = &(block_ptr->d.data[0]); data_ptr < block_ptr->d.data + OS8_BLOCK_SIZE;
+        for (pdp8_word_t *data_ptr = block_ptr->d.data; data_ptr < block_ptr->d.data + OS8_BLOCK_SIZE;
              data_ptr++) {
             *data_ptr = 0;
         }
@@ -1234,7 +1228,7 @@ bool create_filesystem(block_io_t write_block, int os8_file,
     directory[0].d.dir_struct.file_entries[1] = negate(device.filesystem_size);
 
     if (!validate_directory(directory)) {
-        printf("Error validating directory - are you sure the image file is properly formatted?\n");
+        printf("Error validating directory after create?\n");
         return false;
     }
 
@@ -2253,7 +2247,7 @@ int main(int argc, char *argv[])
         }
         break;
     case create:
-        if (exists_p && yes_no_sure()) {
+        if (!exists_p || yes_no_sure()) {
             if (!create_filesystem(write_block, os8_file, directory, format)) {
                 printf("Error creating directory\n");
                 exit(EXIT_FAILURE);
