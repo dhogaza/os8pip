@@ -263,6 +263,7 @@ filename_type_t filename_type(char *filename)
         {".sl", text_type}, /* SABR Source */
         {".te", text_type}, /* TECO File */
         {".tx", text_type}, /* Text File */
+        {".wu", text_type}, /* Write Up (Runoff output) */
         {".bn", binary_type}, /* As seen on OS/8 */
         {".bin", binary_type}, /* cross-assembler output */
         {NULL, unknown_type}
