@@ -1438,9 +1438,9 @@ bool stream_host_text_file(FILE *input, int os8_file, block_io_t write_block,
     int c;
     bool ctrl_z_seen;
     host_char_cnt = 0;
+    bool first_lf = true;
 
     while ((c = fgetc(input)) != EOF && !ctrl_z_seen) {
-        bool first_lf = true;
         ctrl_z_seen = c == '\032';
         if (c == '\012'  && first_lf) {
             if (!put_host_char(t, 0215)) {
