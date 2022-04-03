@@ -25,10 +25,14 @@ a directory, or a single file to a single file.  You can also output a
 single text file to stdout.
 
 Files recognized by extension as text files will remove or add the
-mark bit (0200) and <cr> characters as needed.  Files recognized as
-binary files (loader or RIM) are processed as byte streams (might
-port to windows someday).  Others are processed as image files, and
-copied block-by-block.
+mark bit (0200) and <cr> characters as needed.  These probably needs
+to be enabled/disabled by a command line switch.  Removing <cr> chars
+isn't the right thing to do for Windows and apparently newer versions
+of OS/8 didn't always jam set the mark bit.
+
+Files recognized as binary files (loader or RIM) are processed as byte
+streams (might port to windows someday).  Others are processed as image
+files, and copied block-by-block.
 
 This makes it easy to copy files off of an OS/8 device file, edit it
 locally in your favorite editor, then copy it back to the OS/8 device
